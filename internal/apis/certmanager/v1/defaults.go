@@ -19,7 +19,9 @@ package v1
 import (
 	"k8s.io/apimachinery/pkg/runtime"
 
+	"github.com/cert-manager/cert-manager/internal/controller/feature"
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
+	utilfeature "github.com/cert-manager/cert-manager/pkg/util/feature"
 )
 
 func addDefaultingFuncs(scheme *runtime.Scheme) error {
@@ -34,7 +36,8 @@ func addDefaultingFuncs(scheme *runtime.Scheme) error {
 
 // SetRuntimeDefaults_Certificate mutates the supplied Certificate object,
 // setting defaults for certain missing fields:
-// - Sets the default  private key rotation policy to Always
+//   - Sets the default private key rotation policy to Always when
+//     DefaultPrivateKeyRotationPolicyAlways is enabled, and Never otherwise.
 //
 // NOTE: Do not supply Certificate objects retrieved from a client-go lister
 // because you may corrupt the cache. Do a DeepCopy first. See:
@@ -45,7 +48,7 @@ func addDefaultingFuncs(scheme *runtime.Scheme) error {
 // confusing because we don't (yet) have a defaulting webhook or use API default
 // annotations.
 //
-// TODO(wallrj): Use an API default when we have them implemented, by adding:
+// TODO(wallrj): Once the feature gate is removed, use an API default by adding:
 //
 //	`// +default="Always"`
 //
@@ -55,7 +58,10 @@ func SetRuntimeDefaults_Certificate(in *cmapi.Certificate) {
 		in.Spec.PrivateKey = &cmapi.CertificatePrivateKey{}
 	}
 	if in.Spec.PrivateKey.RotationPolicy == "" {
-		defaultRotationPolicy := cmapi.RotationPolicyAlways
+		defaultRotationPolicy := cmapi.RotationPolicyNever
+		if utilfeature.DefaultFeatureGate.Enabled(feature.DefaultPrivateKeyRotationPolicyAlways) {
+			defaultRotationPolicy = cmapi.RotationPolicyAlways
+		}
 		in.Spec.PrivateKey.RotationPolicy = defaultRotationPolicy
 	}
 }

@@ -161,7 +161,7 @@ const (
 	// Owner: @wallrj
 	// Alpha: v1.18.0
 	// Beta: v1.18.0
-	// GA: v1.20.0
+	// GA: v1.20.0 upstream; this fork retains the configurable Beta gate.
 	//
 	// DefaultPrivateKeyRotationPolicyAlways change the default value of
 	// `Certificate.Spec.PrivateKey.RotationPolicy` to `Always`.
@@ -173,6 +173,8 @@ const (
 	// This feature skipped the Alpha phase and was instead introduced as a Beta
 	// feature, because it is thought be low-risk feature and because we want to
 	// accelerate the adoption of this important security feature.
+	// This compatibility backport restores the v1.19 behavior: setting the gate
+	// to false makes an omitted rotationPolicy default to Never.
 	DefaultPrivateKeyRotationPolicyAlways featuregate.Feature = "DefaultPrivateKeyRotationPolicyAlways"
 
 	// Owner: @sspreitzer, @wallrj
@@ -222,7 +224,7 @@ var defaultCertManagerFeatureGates = map[featuregate.Feature]featuregate.Feature
 	NameConstraints:                                  {Default: true, PreRelease: featuregate.Beta},
 	OtherNames:                                       {Default: true, PreRelease: featuregate.Beta},
 	UseDomainQualifiedFinalizer:                      {Default: true, PreRelease: featuregate.GA},
-	DefaultPrivateKeyRotationPolicyAlways:            {Default: true, PreRelease: featuregate.GA},
+	DefaultPrivateKeyRotationPolicyAlways:            {Default: true, PreRelease: featuregate.Beta},
 	ACMEHTTP01IngressPathTypeExact:                   {Default: true, PreRelease: featuregate.Beta},
 
 	// NB: Deprecated + removed feature gates are kept here.
