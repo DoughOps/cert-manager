@@ -1,0 +1,4 @@
+# Shared by the five Containerfiles in this directory.
+# Policies follow DoughOps/image-builder's documented .ci.yml convention.
+schedule: none
+keep_versions: all

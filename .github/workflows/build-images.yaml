@@ -21,11 +21,6 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_TAG_RULES: |
-    type=sha,format=long
-    type=ref,event=branch
-    type=ref,event=tag
-    type=raw,value=latest,enable={{is_default_branch}}
 
 jobs:
   build:
@@ -40,7 +35,7 @@ jobs:
       matrix:
         component: [controller, acmesolver, cainjector, webhook, startupapicheck]
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -60,7 +55,19 @@ jobs:
           COMPONENT: ${{ matrix.component }}
           ARCH: amd64
           GOMAXPROCS: '2'
+          IMAGE_REF: ${{ github.base_ref || github.ref_name }}
         run: |
+          policy=hack/containers/.ci.yml
+          if [[ ! -f "$policy" ]]; then
+            echo "::error::$policy is required"
+            exit 1
+          fi
+          schedule="$(awk '$1 == "schedule:" {gsub(/["\047]/, "", $2); print $2}' "$policy")"
+          keep_versions="$(awk '$1 == "keep_versions:" {gsub(/["\047]/, "", $2); print $2}' "$policy")"
+          if [[ "$schedule" != none || "$keep_versions" != all ]]; then
+            echo "::error::This release workflow requires explicit schedule: none and keep_versions: all"
+            exit 1
+          fi
           context="_bin/scratch/build-context/cert-manager-${COMPONENT}-linux-${ARCH}"
           version="$(git describe --tags --always --match 'v[0-9]*' --abbrev=12)"
           if [[ ! "$version" =~ ^[a-zA-Z0-9.+_-]+$ ]]; then
@@ -78,20 +85,43 @@ jobs:
           test -n "$base_image"
           echo "context=$context" >> "$GITHUB_OUTPUT"
           echo "base=$base_image" >> "$GITHUB_OUTPUT"
-          echo "name=${REGISTRY}/${GITHUB_REPOSITORY,,}-${COMPONENT}" >> "$GITHUB_OUTPUT"
+          image_name="${REGISTRY}/${GITHUB_REPOSITORY,,}-${COMPONENT}"
+          echo "name=$image_name" >> "$GITHUB_OUTPUT"
+          image_version=""
+          case "$IMAGE_REF" in
+            release-*) image_version="${IMAGE_REF#release-}" ;;
+            v[0-9]*) image_version="$IMAGE_REF" ;;
+          esac
+          if [[ -n "$image_version" && ! "$image_version" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,119}$ ]]; then
+            echo "::error::Release or version-tag name cannot be used as an image tag"
+            exit 1
+          fi
+          shortsha="${GITHUB_SHA::7}"
+          if [[ -n "$image_version" ]]; then
+            primary_tag="$image_version"
+            secondary_tag="${image_version}-${shortsha}"
+          else
+            primary_tag=latest
+            secondary_tag="$shortsha"
+          fi
+          echo "primary=$primary_tag" >> "$GITHUB_OUTPUT"
+          echo "secondary=$secondary_tag" >> "$GITHUB_OUTPUT"
+          echo "tags=${image_name}:${primary_tag},${image_name}:${secondary_tag}" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Image tags and labels
         id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ${{ steps.image.outputs.name }}
-          tags: ${{ env.IMAGE_TAG_RULES }}
+          tags: |
+            type=raw,value=${{ steps.image.outputs.primary }},priority=1000
+            type=raw,value=${{ steps.image.outputs.secondary }}
 
       - name: Log in to GHCR
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -99,14 +129,51 @@ jobs:
 
       - name: Build and push the image
         id: build
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: ${{ steps.image.outputs.context }}
           file: hack/containers/Containerfile.${{ matrix.component }}
           platforms: linux/amd64
           build-args: BASE_IMAGE=${{ steps.image.outputs.base }}
           labels: ${{ steps.meta.outputs.labels }}
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ steps.image.outputs.tags }}
           push: ${{ github.event_name != 'pull_request' }}
           cache-from: type=gha,scope=${{ matrix.component }}-amd64
           cache-to: type=gha,mode=max,scope=${{ matrix.component }}-amd64
+
+      - name: Image build summary
+        if: always()
+        env:
+          COMPONENT: ${{ matrix.component }}
+          BUILD_STATUS: ${{ steps.build.outcome }}
+          JOB_STATUS: ${{ job.status }}
+          EVENT_NAME: ${{ github.event_name }}
+          TAGS: ${{ steps.image.outputs.tags }}
+        run: |
+          status="$JOB_STATUS"
+          if [[ "$BUILD_STATUS" == success ]]; then
+            if [[ "$EVENT_NAME" == pull_request ]]; then
+              status='Built (not published)'
+            else
+              status=Published
+            fi
+          fi
+          package="${GITHUB_REPOSITORY##*/}-${COMPONENT}"
+          package="${package,,}"
+          {
+            echo "### \`$COMPONENT\`"
+            echo
+            echo "**Status:** $status"
+            echo
+            echo '**Platform:** linux/amd64'
+            echo
+            echo 'Image tags:'
+            IFS=, read -r -a image_tags <<< "$TAGS"
+            for tag in "${image_tags[@]}"; do
+              echo "- \`$tag\`"
+            done
+            echo
+            echo "[View on GHCR](https://github.com/orgs/${GITHUB_REPOSITORY_OWNER,,}/packages/container/package/${package})"
+            echo
+            echo '**Retention:** this workflow keeps all image versions.'
+          } >> "$GITHUB_STEP_SUMMARY"
