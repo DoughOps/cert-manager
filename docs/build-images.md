@@ -30,10 +30,12 @@ repository's default branch.
 | Webhook | `ghcr.io/doughops/cert-manager-webhook` |
 | Startup API check | `ghcr.io/doughops/cert-manager-startupapicheck` |
 
-Tags follow image-builder's two-tag convention. `release-1.20.3` builds publish
-`1.20.3` and `1.20.3-<7-character-sha>`. Version-tag builds similarly publish
-`v1.20.3-doughops.1` and `v1.20.3-doughops.1-<7-character-sha>`. Unversioned
-builds, such as `master`, publish `latest` and `<7-character-sha>`.
+Tags follow image-builder's two-tag convention with the `-tks-custom` suffix.
+`release-1.20.3` builds publish `1.20.3-tks-custom` and
+`1.20.3-tks-custom-<7-character-sha>`. Version-tag builds similarly publish
+`v1.20.3-tks-custom` and `v1.20.3-tks-custom-<7-character-sha>`; an existing
+`-tks-custom` suffix is not added twice. Unversioned builds, such as `master`,
+publish `latest-tks-custom` and `<7-character-sha>-tks-custom`.
 
 Each component is built and published by its own matrix job. Pull-request builds
 do not log in to GHCR or push images. Branch/tag/manual builds publish the image
@@ -53,32 +55,32 @@ are not enabled for this release.
 ## Deploying the fork
 
 Use the same published tag for all components. For example, with the packaged
-cert-manager Helm chart and the `1.20.3` image tag:
+cert-manager Helm chart and the `1.20.3-tks-custom` image tag:
 
 ```yaml
 image:
   repository: ghcr.io/doughops/cert-manager-controller
-  tag: "1.20.3"
+  tag: "1.20.3-tks-custom"
 acmesolver:
   image:
     repository: ghcr.io/doughops/cert-manager-acmesolver
-    tag: "1.20.3"
+    tag: "1.20.3-tks-custom"
 cainjector:
   image:
     repository: ghcr.io/doughops/cert-manager-cainjector
-    tag: "1.20.3"
+    tag: "1.20.3-tks-custom"
 webhook:
   image:
     repository: ghcr.io/doughops/cert-manager-webhook
-    tag: "1.20.3"
+    tag: "1.20.3-tks-custom"
 startupapicheck:
   image:
     repository: ghcr.io/doughops/cert-manager-startupapicheck
-    tag: "1.20.3"
+    tag: "1.20.3-tks-custom"
 featureGates: "DefaultPrivateKeyRotationPolicyAlways=false"
 ```
 
-The fixed `1.20.3` tag moves when this fork is rebuilt. For reproducible
+The fixed `1.20.3-tks-custom` tag moves when this fork is rebuilt. For reproducible
 deployments, select the version/short-SHA tag or an image digest. The
 repository's `values.yaml` supports image digests.
 If the organization restricts package creation or image visibility, an org owner

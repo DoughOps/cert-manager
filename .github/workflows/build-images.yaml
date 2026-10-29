@@ -92,6 +92,9 @@ jobs:
             release-*) image_version="${IMAGE_REF#release-}" ;;
             v[0-9]*) image_version="$IMAGE_REF" ;;
           esac
+          if [[ -n "$image_version" ]]; then
+            image_version="${image_version%-tks-custom}-tks-custom"
+          fi
           if [[ -n "$image_version" && ! "$image_version" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,119}$ ]]; then
             echo "::error::Release or version-tag name cannot be used as an image tag"
             exit 1
@@ -101,8 +104,8 @@ jobs:
             primary_tag="$image_version"
             secondary_tag="${image_version}-${shortsha}"
           else
-            primary_tag=latest
-            secondary_tag="$shortsha"
+            primary_tag=latest-tks-custom
+            secondary_tag="${shortsha}-tks-custom"
           fi
           echo "primary=$primary_tag" >> "$GITHUB_OUTPUT"
           echo "secondary=$secondary_tag" >> "$GITHUB_OUTPUT"
