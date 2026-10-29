@@ -1,0 +1,182 @@
+name: Build container images
+
+on:
+  pull_request:
+    branches: [master, 'release-*']
+  push:
+    branches: [master, 'release-*']
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: images-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    if: github.repository == 'DoughOps/cert-manager'
+    name: Build ${{ matrix.component }} (amd64)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [controller, acmesolver, cainjector, webhook, startupapicheck]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Read the repository's Go version
+        id: go-version
+        run: make print-go-version >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: ${{ steps.go-version.outputs.result }}
+          cache-dependency-path: '**/go.sum'
+
+      - name: Prepare the upstream image build context
+        id: image
+        env:
+          COMPONENT: ${{ matrix.component }}
+          ARCH: amd64
+          GOMAXPROCS: '2'
+          IMAGE_REF: ${{ github.base_ref || github.ref_name }}
+        run: |
+          policy=hack/containers/.ci.yml
+          if [[ ! -f "$policy" ]]; then
+            echo "::error::$policy is required"
+            exit 1
+          fi
+          schedule="$(awk '$1 == "schedule:" {gsub(/["\047]/, "", $2); print $2}' "$policy")"
+          keep_versions="$(awk '$1 == "keep_versions:" {gsub(/["\047]/, "", $2); print $2}' "$policy")"
+          if [[ "$schedule" != none || "$keep_versions" != all ]]; then
+            echo "::error::This release workflow requires explicit schedule: none and keep_versions: all"
+            exit 1
+          fi
+          context="_bin/scratch/build-context/cert-manager-${COMPONENT}-linux-${ARCH}"
+          version="$(git describe --tags --always --match 'v[0-9]*' --abbrev=12)"
+          if [[ ! "$version" =~ ^[a-zA-Z0-9.+_-]+$ ]]; then
+            version="$GITHUB_SHA"
+          fi
+          make -j2 GOBUILDPROCS=2 GOFLAGS='-trimpath -mod=readonly -p=2' VERSION="$version" \
+            "${context}/${COMPONENT}" \
+            "${context}/cert-manager.license" \
+            "${context}/cert-manager.licenses_notice"
+          sed -i -E \
+            "s#https://github.com/cert-manager/cert-manager/blob/[^/]+/LICENSES#https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/LICENSES#g" \
+            "${context}/cert-manager.license" "${context}/cert-manager.licenses_notice"
+          base_image="$(make --no-print-directory CI_ARCH="$ARCH" \
+            --eval='print-image-base: ; @echo $(STATIC_BASE_IMAGE_$(CI_ARCH))' print-image-base)"
+          test -n "$base_image"
+          echo "context=$context" >> "$GITHUB_OUTPUT"
+          echo "base=$base_image" >> "$GITHUB_OUTPUT"
+          image_name="${REGISTRY}/${GITHUB_REPOSITORY,,}-${COMPONENT}"
+          echo "name=$image_name" >> "$GITHUB_OUTPUT"
+          image_version=""
+          case "$IMAGE_REF" in
+            release-*) image_version="${IMAGE_REF#release-}" ;;
+            v[0-9]*) image_version="$IMAGE_REF" ;;
+          esac
+          if [[ -n "$image_version" ]]; then
+            image_version="${image_version%-tks-custom}-tks-custom"
+          fi
+          if [[ -n "$image_version" && ! "$image_version" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,119}$ ]]; then
+            echo "::error::Release or version-tag name cannot be used as an image tag"
+            exit 1
+          fi
+          shortsha="${GITHUB_SHA::7}"
+          if [[ -n "$image_version" ]]; then
+            primary_tag="$image_version"
+            secondary_tag="${image_version}-${shortsha}"
+          else
+            primary_tag=latest-tks-custom
+            secondary_tag="${shortsha}-tks-custom"
+          fi
+          echo "primary=$primary_tag" >> "$GITHUB_OUTPUT"
+          echo "secondary=$secondary_tag" >> "$GITHUB_OUTPUT"
+          echo "tags=${image_name}:${primary_tag},${image_name}:${secondary_tag}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - name: Image tags and labels
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=raw,value=${{ steps.image.outputs.primary }},priority=1000
+            type=raw,value=${{ steps.image.outputs.secondary }}
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push the image
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: ${{ steps.image.outputs.context }}
+          file: hack/containers/Containerfile.${{ matrix.component }}
+          platforms: linux/amd64
+          build-args: BASE_IMAGE=${{ steps.image.outputs.base }}
+          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.image.outputs.tags }}
+          push: ${{ github.event_name != 'pull_request' }}
+          cache-from: type=gha,scope=${{ matrix.component }}-amd64
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}-amd64
+
+      - name: Image build summary
+        if: always()
+        env:
+          COMPONENT: ${{ matrix.component }}
+          BUILD_STATUS: ${{ steps.build.outcome }}
+          JOB_STATUS: ${{ job.status }}
+          EVENT_NAME: ${{ github.event_name }}
+          TAGS: ${{ steps.image.outputs.tags }}
+        run: |
+          status="$JOB_STATUS"
+          if [[ "$BUILD_STATUS" == success ]]; then
+            if [[ "$EVENT_NAME" == pull_request ]]; then
+              status='Built (not published)'
+            else
+              status=Published
+            fi
+          fi
+          package="${GITHUB_REPOSITORY##*/}-${COMPONENT}"
+          package="${package,,}"
+          {
+            echo "### \`$COMPONENT\`"
+            echo
+            echo "**Status:** $status"
+            echo
+            echo '**Platform:** linux/amd64'
+            echo
+            echo 'Image tags:'
+            IFS=, read -r -a image_tags <<< "$TAGS"
+            for tag in "${image_tags[@]}"; do
+              echo "- \`$tag\`"
+            done
+            echo
+            echo "[View on GHCR](https://github.com/orgs/${GITHUB_REPOSITORY_OWNER,,}/packages/container/package/${package})"
+            echo
+            echo '**Retention:** this workflow keeps all image versions.'
+          } >> "$GITHUB_STEP_SUMMARY"
